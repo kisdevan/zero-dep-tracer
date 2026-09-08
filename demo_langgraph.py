@@ -21,7 +21,7 @@ from langgraph.graph import END, START, StateGraph
 
 import demo_loop as dl
 from demo_loop import GraphState, generate_code_node, judge_node, post_check_node, verify_syntax_node, tracer
-from tracer import print_tree
+from tracer import print_mermaid, print_tree
 
 
 @tracer.traced("node.budget")
@@ -86,3 +86,9 @@ if __name__ == "__main__":
     print(f"\n[langgraph] scenario={scenario}  llm={'real' if real else 'mock'}")
     print(f"final status = {final['status']}   attempts = {final['attempts']}")
     print_tree(dl.TRACE_PATH, last=1)
+    if "--mermaid" in args:
+        # 설계 그래프(LangGraph 가 그린 것) vs 실제 실행 경로(트레이스에서 복원한 것) — 둘을 나란히 붙여 비교한다
+        print("\n설계 그래프 (graph.get_graph().draw_mermaid()):")
+        print("```mermaid\n" + build_graph().get_graph().draw_mermaid().strip() + "\n```")
+        print("\n실제 실행 경로 (트레이스에서 복원):")
+        print_mermaid(dl.TRACE_PATH, last=1)

@@ -5,6 +5,7 @@
     python demo_loop.py --false-green    # 평가 노드가 느슨해서 빈 코드를 통과시키는 시나리오 (거짓 초록불)
     python demo_loop.py --real           # ANTHROPIC_API_KEY 가 있으면 실제 Claude 호출
     python demo_loop.py --reset          # traces.jsonl 을 비우고 시작
+    python demo_loop.py --mermaid        # 끝나면 실제 실행 경로를 mermaid 로 출력 (GitHub/Notion 에 붙이면 그려진다)
 
 트레이스는 ./traces.jsonl 에 쌓인다. 보는 방법은 두 가지:
     python -c "from tracer import print_tree; print_tree('traces.jsonl', last=2)"
@@ -27,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, TypedDict
 
-from tracer import Tracer, print_tree
+from tracer import Tracer, print_mermaid, print_tree
 
 HERE = Path(__file__).parent
 TRACE_PATH = HERE / "traces.jsonl"
@@ -229,3 +230,6 @@ if __name__ == "__main__":
     print(f"final status = {final['status']}   attempts = {final['attempts']}")
     print("code:\n" + "\n".join("    " + l for l in final["code"].splitlines()))
     print_tree(TRACE_PATH, last=1)
+    if "--mermaid" in args:
+        print("\n실제 실행 경로 (mermaid):")
+        print_mermaid(TRACE_PATH, last=1)

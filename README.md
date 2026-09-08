@@ -30,6 +30,7 @@ python dashboard.py --open          # 대시보드 (다른 터미널에서 계�
 python demo_loop.py --reset         # 1) 자가 교정 루프 — 3회 만에 성공하는 정상 시나리오
 python demo_loop.py --false-green   # 2) 거짓 초록불 — LLM 판정은 PASS, 결정적 게이트가 잡아낸다
 python demo_langgraph.py            # 3) 같은 노드를 LangGraph 로 — 관측 코드는 그대로
+python demo_langgraph.py --mermaid  # 설계 그래프 vs 실제 실행 경로를 mermaid 로 출력 (아래 참조)
 
 python -c "from tracer import print_tree; print_tree('traces.jsonl', last=3)"   # 브라우저 없이 터미널 트리로
 ```
@@ -40,10 +41,18 @@ python -c "from tracer import print_tree; print_tree('traces.jsonl', last=3)"   
 
 데모 파이프라인은 코드 생성 팩토리의 뼈대입니다.
 
-```
-generate ──▶ verify(ast) ──▶ judge(LLM) ──▶ post_check(결정적 게이트)
-    ▲            │ 실패           │ FAIL
-    └────────────┴────────────────┘      스텝 예산(MAX_ATTEMPTS) 초과 시 status = 차단
+```mermaid
+flowchart LR
+    S((start)) --> G[node.generate]
+    G --> V[node.verify_syntax]
+    V -->|PASS| J[node.judge]
+    V -->|FAIL| B{attempts ≥ MAX?}
+    J -->|FAIL| B
+    B -->|no| G
+    B -->|yes| X[status = 차단]
+    J -->|PASS| P[gate.post_check]
+    X --> P
+    P --> E((end))
 ```
 
 | 시나리오 | 종료 상태 | 시도 | 트레이스가 보여준 것 |
@@ -55,6 +64,79 @@ generate ──▶ verify(ast) ──▶ judge(LLM) ──▶ post_check(결정�
 거짓 초록불 시나리오에서 `gate.post_check` 스팬을 클릭한 화면입니다. `loop_status` 는 `완료`, 판정도 PASS 였지만 `present: false` 와 `alert` 가 같은 스팬에 남아 있습니다.
 
 ![false green detail](docs/dashboard_false_green.png)
+
+## 설계 그래프 vs 실제 실행 경로
+
+트레이서는 트레이스에서 **실제로 지나간 길**을 mermaid 로 복원합니다 (`trace_to_mermaid()` / `print_mermaid()`, 대시보드의 `mermaid` 버튼). LangGraph 가 그려 주는 **설계 그래프**(`graph.get_graph().draw_mermaid()`)와 나란히 두면, 설계에는 있지만 한 번도 타지 않은 엣지와 루프를 몇 번 돌았는지가 한눈에 보입니다. 아래 두 그림은 `python demo_langgraph.py --mermaid` 의 출력을 그대로 붙인 것입니다.
+
+**설계 그래프** — 가능한 모든 경로. 점선은 조건부 엣지.
+
+```mermaid
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	generate(generate)
+	verify(verify)
+	judge(judge)
+	budget(budget)
+	post_check(post_check)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> generate;
+	budget --> post_check;
+	generate --> verify;
+	judge -.-> budget;
+	judge -.-> generate;
+	judge -.-> post_check;
+	verify -.-> budget;
+	verify -.-> generate;
+	verify -.-> judge;
+	post_check --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+**실제 실행 경로** (정상 시나리오) — 실제로 탄 엣지만. `×N` 은 횟수, 주황 엣지는 FAIL 전이. `budget` 은 한 번도 실행되지 않았음이 보입니다.
+
+```mermaid
+flowchart LR
+    __start((start))
+    __end((end))
+    node_generate["node.generate ×3"]
+    node_verify_syntax["node.verify_syntax ×3"]
+    node_judge["node.judge ×2"]
+    gate_post_check["gate.post_check"]
+    __start --> node_generate
+    node_generate -->|×3| node_verify_syntax
+    node_verify_syntax -->|FAIL| node_generate
+    node_verify_syntax -->|PASS ×2| node_judge
+    node_judge -->|FAIL| node_generate
+    node_judge -->|PASS| gate_post_check
+    gate_post_check --> __end
+    classDef err fill:#fecaca,stroke:#b91c1c,color:#111
+    classDef alert fill:#fde68a,stroke:#b45309,color:#111
+    linkStyle 2 stroke:#e3742f,stroke-width:2px
+    linkStyle 4 stroke:#e3742f,stroke-width:2px
+```
+
+**실제 실행 경로** (거짓 초록불 시나리오) — 모든 판정이 PASS 로 곧장 끝났지만, `gate.post_check` 가 노랗게(alert) 표시됩니다.
+
+```mermaid
+flowchart LR
+    __start((start))
+    __end((end))
+    node_generate["node.generate"]
+    node_verify_syntax["node.verify_syntax"]
+    node_judge["node.judge"]
+    gate_post_check["gate.post_check"]
+    __start --> node_generate
+    node_generate --> node_verify_syntax
+    node_verify_syntax -->|PASS| node_judge
+    node_judge -->|PASS| gate_post_check
+    gate_post_check --> __end
+    classDef err fill:#fecaca,stroke:#b91c1c,color:#111
+    classDef alert fill:#fde68a,stroke:#b45309,color:#111
+    class gate_post_check alert
+```
 
 ## 수업에서 전달할 세 문장
 
@@ -104,8 +186,8 @@ with tracer.trace("run", requirement=req) as root:   # 루트 스팬 = 실행 1�
 
 | 파일 | 역할 | 의존성 |
 |---|---|---|
-| `tracer.py` | 스팬 생성·중첩·JSONL 기록. `@tracer.traced`, `tracer.span()`, `tracer.trace()`, `print_tree()` | **없음** |
-| `dashboard.py` | `http.server` 기반 워터폴 · 노드별 통계 · 스팬 속성 뷰어. 외부 JS/CSS/폰트 없음, 2초 자동 갱신 | **없음** |
+| `tracer.py` | 스팬 생성·중첩·JSONL 기록. `@tracer.traced`, `tracer.span()`, `tracer.trace()`, `print_tree()`, `trace_to_mermaid()` / `print_mermaid()` | **없음** |
+| `dashboard.py` | `http.server` 기반 워터폴 · 노드별 통계 · 스팬 속성 뷰어 · 실제 경로 mermaid 소스 버튼. 외부 JS/CSS/폰트 없음, 2초 자동 갱신 | **없음** |
 | `demo_loop.py` | 자가 교정 루프 데모 (Pure Python). Mock LLM 내장, `--real` 로 실제 Claude | `anthropic` (`--real` 만) |
 | `demo_langgraph.py` | 같은 노드를 `StateGraph` 로 재조립 | `langgraph` ≥ 1.0 |
 | `start_dashboard.cmd` · `run_demos.cmd` | Windows 더블클릭 실행 | — |

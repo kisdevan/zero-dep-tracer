@@ -30,10 +30,11 @@ from __future__ import annotations
 import contextvars
 import functools
 import json
+import re
 import time
 import traceback
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -223,3 +224,65 @@ def print_tree(path: str | Path, last: int = 1) -> None:
                 walk(s["span_id"], depth + 1)
 
         walk(None, 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Mermaid — 트레이스에서 "실제 실행 경로"를 플로차트로 복원한다. 외부 의존성 없음 — 텍스트만 만든다.
+# GitHub · Notion 은 ```mermaid 블록을 그대로 그린다.
+# LangGraph 의 graph.get_graph().draw_mermaid() 가 "설계 그래프"라면 이것은 "실제로 지나간 길"이다.
+# 둘을 나란히 두면 설계와 실행이 어디서 갈렸는지, 어느 엣지를 몇 번 탔는지가 보인다.
+# ──────────────────────────────────────────────────────────────────────────────
+def trace_to_mermaid(spans: list[dict[str, Any]], include: tuple[str, ...] = ("node.", "gate."), direction: str = "LR") -> str:
+    """스팬 목록 → mermaid flowchart. include 접두사에 맞는 스팬(노드)만 시간순으로 이어 붙이고,
+    같은 전이는 합쳐서 ×N 으로, 출발 스팬의 verdict 는 엣지 라벨로 남긴다."""
+    steps = sorted((s for s in spans if s["name"].startswith(include)), key=lambda s: s["start_time_unix_nano"])
+    if not steps:
+        return f'flowchart {direction}\n    empty["(no node spans)"]'
+
+    def nid(name: str) -> str:
+        return re.sub(r"[^0-9A-Za-z_]", "_", name)
+
+    calls = Counter(s["name"] for s in steps)
+    css: dict[str, str] = {}
+    for s in steps:
+        if s["status"] == "ERROR":
+            css[s["name"]] = "err"
+        elif s["attributes"].get("alert") and css.get(s["name"]) != "err":
+            css[s["name"]] = "alert"
+
+    edges: Counter = Counter()
+    edges[("__start", steps[0]["name"], "")] += 1
+    for a, b in zip(steps, steps[1:]):
+        edges[(a["name"], b["name"], str(a["attributes"].get("verdict", "") or ""))] += 1
+    edges[(steps[-1]["name"], "__end", str(steps[-1]["attributes"].get("verdict", "") or ""))] += 1
+
+    lines = [f"flowchart {direction}", "    __start((start))", "    __end((end))"]
+    for name, n in calls.items():
+        lines.append(f'    {nid(name)}["{name}{f" ×{n}" if n > 1 else ""}"]')
+
+    fail_links: list[int] = []
+    for i, ((src, dst, verdict), n) in enumerate(edges.items()):
+        label = " ".join(p for p in (verdict, f"×{n}" if n > 1 else "") if p)
+        s_id = src if src.startswith("__") else nid(src)
+        d_id = dst if dst.startswith("__") else nid(dst)
+        lines.append(f"    {s_id} -->|{label}| {d_id}" if label else f"    {s_id} --> {d_id}")
+        if verdict == "FAIL":
+            fail_links.append(i)
+
+    lines.append("    classDef err fill:#fecaca,stroke:#b91c1c,color:#111")
+    lines.append("    classDef alert fill:#fde68a,stroke:#b45309,color:#111")
+    for cls in ("err", "alert"):
+        ids = [nid(n) for n, c in css.items() if c == cls]
+        if ids:
+            lines.append(f"    class {','.join(ids)} {cls}")
+    for i in fail_links:
+        lines.append(f"    linkStyle {i} stroke:#e3742f,stroke-width:2px")
+    return "\n".join(lines)
+
+
+def print_mermaid(path: str | Path, last: int = 1, fenced: bool = True) -> None:
+    """마지막 N개 트레이스의 실제 실행 경로를 mermaid 로 출력한다. 그대로 GitHub/Notion 에 붙이면 그려진다."""
+    groups = load_traces(path)
+    for trace_id in list(groups)[-last:]:
+        body = trace_to_mermaid(groups[trace_id])
+        print(f"```mermaid\n{body}\n```" if fenced else body)

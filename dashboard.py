@@ -23,9 +23,9 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from tracer import load_traces
+from tracer import load_traces, trace_to_mermaid
 
 _args = [a for a in sys.argv[1:] if not a.startswith("--")]
 _flags = {a for a in sys.argv[1:] if a.startswith("--")}
@@ -58,6 +58,7 @@ main{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 44px)}
 #detail{border-top:1px solid var(--line);background:var(--panel);max-height:42vh;overflow:auto;padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;color:#c9d1d9;font-size:12px}
 h3{margin:0 0 6px;font-size:12px;color:var(--dim);font-weight:600;letter-spacing:.04em}
+h3 button{background:#1f2a3a;color:var(--fg);border:1px solid var(--line);border-radius:3px;font:inherit;font-size:11px;padding:1px 8px;cursor:pointer;margin-left:8px}h3 button:hover{background:#26334a}
 table{border-collapse:collapse;width:100%}td,th{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right;font-size:12px}th{color:var(--dim);font-weight:600}td:first-child,th:first-child{text-align:left}
 .alert{color:var(--warn)}.empty{color:var(--dim);padding:24px}
 </style></head><body>
@@ -66,7 +67,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:4px 8px;border-bottom:1p
 <span class="kpi">alerts<b id="k-a">0</b></span><span class="kpi">tokens<b id="k-t">0</b></span>
 <span class="kpi" style="margin-left:auto" id="k-src"></span></header>
 <main><div id="list"></div><div id="right"><div id="wf"><div class="empty">트레이스를 선택하세요</div></div>
-<div id="detail"><div><h3>SPAN</h3><pre id="d-span">스팬을 클릭하면 속성이 여기 표시됩니다</pre></div><div><h3>노드별 통계</h3><div id="stats"></div></div></div></div></main>
+<div id="detail"><div><h3>SPAN <button id="btn-mm" title="선택한 트레이스의 실제 실행 경로를 mermaid 소스로 — GitHub/Notion 에 붙이면 그려집니다">mermaid</button></h3><pre id="d-span">스팬을 클릭하면 속성이 여기 표시됩니다</pre></div><div><h3>노드별 통계</h3><div id="stats"></div></div></div></div></main>
 <script>
 const $=s=>document.querySelector(s);let traces=[],selected=null,selSpan=null;
 const fmt=ms=>ms>=1000?(ms/1000).toFixed(2)+' s':ms.toFixed(1)+' ms';
@@ -117,6 +118,7 @@ function renderStats(){
   const rows=Object.entries(agg).sort((a,b)=>b[1].sum-a[1].sum).map(([n,a])=>`<tr><td>${n}</td><td>${a.n}</td><td>${fmt(a.sum/a.n)}</td><td>${fmt(a.max)}</td><td class="${a.err?'alert':''}">${a.err}</td><td>${a.tok}</td></tr>`).join('');
   $('#stats').innerHTML=`<table><tr><th>span</th><th>calls</th><th>avg</th><th>max</th><th>errors</th><th>tokens</th></tr>${rows}</table>`;
 }
+$('#btn-mm').onclick=async()=>{if(!selected)return;const r=await fetch('/api/mermaid?trace='+encodeURIComponent(selected));$('#d-span').textContent='```mermaid\n'+await r.text()+'\n```';};
 load();setInterval(load,2000);
 </script></body></html>"""
 
@@ -127,6 +129,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/traces":
             payload = {"path": str(TRACE_PATH), "traces": list(load_traces(TRACE_PATH).values())}
             self._send(200, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        elif path == "/api/mermaid":
+            # 선택한 트레이스의 실제 실행 경로를 mermaid 소스로. 렌더링은 GitHub/Notion 에 붙여서 — 대시보드는 오프라인을 지킨다.
+            trace_id = parse_qs(urlparse(self.path).query).get("trace", [""])[0]
+            spans = load_traces(TRACE_PATH).get(trace_id, [])
+            self._send(200, "text/plain; charset=utf-8", trace_to_mermaid(spans).encode("utf-8"))
         elif path == "/":
             self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
         else:
